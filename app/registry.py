@@ -24,6 +24,9 @@ class Model:
             )
         return sum(w * x for w, x in zip(self.weights, features)) + self.bias
 
+    def predict_batch(self, batch):
+        return [self.predict(features) for features in batch]
+
     def info(self):
         return {
             "name": self.name,

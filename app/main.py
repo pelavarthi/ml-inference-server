@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
+from app.batching import Batcher
 from app.metrics import Metrics
 from app.queue import AsyncPredictQueue, QueueFullError
 from app.registry import ModelRegistry
@@ -20,12 +21,29 @@ def create_app(registry=None):
 
     metrics = Metrics()
     queue = AsyncPredictQueue(registry)
+    batchers = {}
+
+    def batcher_for(model):
+        if model.name not in batchers:
+            batchers[model.name] = Batcher(model.predict_batch)
+        return batchers[model.name]
+
+    def batching_stats():
+        total = {"batches": 0, "requests": 0, "largest_batch": 0}
+        for batcher in batchers.values():
+            stats = batcher.stats
+            total["batches"] += stats["batches"]
+            total["requests"] += stats["requests"]
+            total["largest_batch"] = max(total["largest_batch"], stats["largest_batch"])
+        return total
 
     @asynccontextmanager
     async def lifespan(app):
         queue.ensure_started()
         yield
         await queue.stop()
+        for batcher in batchers.values():
+            await batcher.stop()
 
     app = FastAPI(title="ml-inference-server", lifespan=lifespan)
 
@@ -57,6 +75,7 @@ def create_app(registry=None):
         snapshot = metrics.snapshot()
         snapshot["models"] = len(registry.list_models())
         snapshot["queue_depth"] = queue.depth
+        snapshot["batching"] = batching_stats()
         metrics.record_request("GET", "/metrics", 200)
         return snapshot
 
@@ -90,6 +109,28 @@ def create_app(registry=None):
             metrics.record_prediction(False)
             raise HTTPException(status_code=400, detail=str(exc))
         metrics.record_request("POST", "/predict", 200)
+        metrics.record_prediction(True)
+        return PredictResponse(
+            model=model.name, version=model.version, prediction=prediction
+        )
+
+    @app.post("/predict/batched", response_model=PredictResponse)
+    async def predict_batched(request: PredictRequest):
+        try:
+            model = registry.get(request.model)
+        except KeyError:
+            metrics.record_request("POST", "/predict/batched", 404)
+            metrics.record_prediction(False)
+            raise HTTPException(status_code=404, detail="unknown model")
+        batcher = batcher_for(model)
+        batcher.ensure_started()
+        try:
+            prediction = await batcher.submit(request.features)
+        except ValueError as exc:
+            metrics.record_request("POST", "/predict/batched", 400)
+            metrics.record_prediction(False)
+            raise HTTPException(status_code=400, detail=str(exc))
+        metrics.record_request("POST", "/predict/batched", 200)
         metrics.record_prediction(True)
         return PredictResponse(
             model=model.name, version=model.version, prediction=prediction
