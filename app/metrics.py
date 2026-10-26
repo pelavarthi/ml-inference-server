@@ -15,6 +15,7 @@ class Metrics:
         self._requests = {}
         self._predictions = 0
         self._prediction_failures = 0
+        self._stream_rejected = 0
 
     def record_request(self, method, path, status):
         key = f"{method} {path} {status}"
@@ -27,6 +28,10 @@ class Metrics:
             if not ok:
                 self._prediction_failures += 1
 
+    def record_stream_rejected(self):
+        with self._lock:
+            self._stream_rejected += 1
+
     def snapshot(self):
         with self._lock:
             return {
@@ -35,5 +40,8 @@ class Metrics:
                 "predictions": {
                     "total": self._predictions,
                     "failed": self._prediction_failures,
+                },
+                "streaming": {
+                    "rejected": self._stream_rejected,
                 },
             }

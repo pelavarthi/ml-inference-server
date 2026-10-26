@@ -1,20 +1,23 @@
 """FastAPI entry point: health, model list, predict, metrics, async queue."""
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.batching import Batcher
 from app.metrics import Metrics
 from app.queue import AsyncPredictQueue, QueueFullError
 from app.registry import ModelRegistry
 from app.schemas import JobResponse, PredictRequest, PredictResponse
+from app.streaming import ConcurrencyLimiter, stream_prediction
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
-def create_app(registry=None):
+def create_app(registry=None, max_concurrent_streams=10):
     registry = registry or ModelRegistry()
     if not registry.list_models() and MODELS_DIR.exists():
         registry.load_directory(MODELS_DIR)
@@ -22,6 +25,7 @@ def create_app(registry=None):
     metrics = Metrics()
     queue = AsyncPredictQueue(registry)
     batchers = {}
+    stream_limiter = ConcurrencyLimiter(max_concurrent_streams)
 
     def batcher_for(model):
         if model.name not in batchers:
@@ -160,6 +164,49 @@ def create_app(registry=None):
             raise HTTPException(status_code=404, detail="unknown job")
         metrics.record_request("GET", "/predict/jobs/{job_id}", 200)
         return job_response(job)
+
+    @app.post("/predict/stream")
+    async def predict_stream(
+        request: Request,
+        body: PredictRequest,
+        timeout_seconds: float = Query(default=30.0, gt=0),
+        chunk_size: int = Query(default=4, ge=1),
+    ):
+        try:
+            model = registry.get(body.model)
+        except KeyError:
+            metrics.record_request("POST", "/predict/stream", 404)
+            raise HTTPException(status_code=404, detail="unknown model")
+        if len(body.features) != len(model.weights):
+            metrics.record_request("POST", "/predict/stream", 400)
+            raise HTTPException(
+                status_code=400,
+                detail=f"expected {len(model.weights)} features, "
+                f"got {len(body.features)}",
+            )
+        if not stream_limiter.try_acquire():
+            metrics.record_request("POST", "/predict/stream", 429)
+            metrics.record_stream_rejected()
+            raise HTTPException(
+                status_code=429, detail="too many concurrent streams"
+            )
+        metrics.record_request("POST", "/predict/stream", 200)
+
+        async def event_stream():
+            try:
+                async for event in stream_prediction(
+                    model,
+                    body.features,
+                    chunk_size=chunk_size,
+                    timeout_seconds=timeout_seconds,
+                ):
+                    if await request.is_disconnected():
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                stream_limiter.release()
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     return app
 
