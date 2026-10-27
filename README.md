@@ -30,3 +30,16 @@ For slow models, `POST /predict/async` returns a job id right away (202)
 instead of holding the request open. Poll `GET /predict/jobs/{job_id}`
 for `pending`, `running`, `done`, or `failed`. The queue holds at most
 100 jobs and answers 429 when full.
+
+## Rust extension (tokenizer)
+
+`rust/` holds a PyO3 extension module, `ml_rust`, with a word tokenizer:
+words and numbers stay whole, punctuation becomes its own token, and a
+small vocabulary maps tokens to ids (0 is padding, 1 is unknown). It has
+the same tokenize, encode, and decode behavior as the reference
+implementation in `app/tokenizer.py`, so the two can be compared directly.
+
+Build it with maturin from the `rust/` directory (`maturin develop`), and
+run its unit tests with `cargo test`. The server does not call it yet;
+wiring it into preprocessing, with a fallback when it is missing, is a
+later step.
