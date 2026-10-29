@@ -1,8 +1,8 @@
 //! Python extension module for the ML inference server.
 //!
-//! It exposes the tokenizer and batch preparation. The server does not
-//! call it yet; Day 7 wires it into preprocessing with a fallback when
-//! it is missing.
+//! It exposes the tokenizer and batch preparation. The server calls it
+//! through app/backend.py, which falls back to pure Python when this
+//! extension is missing.
 //!
 //! Build with maturin (`maturin develop`, from the rust/ directory) or
 //! with `cargo build --release` and copy the shared library onto the

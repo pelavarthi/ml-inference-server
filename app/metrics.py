@@ -16,6 +16,7 @@ class Metrics:
         self._predictions = 0
         self._prediction_failures = 0
         self._stream_rejected = 0
+        self._preprocessing = {}
 
     def record_request(self, method, path, status):
         key = f"{method} {path} {status}"
@@ -32,6 +33,10 @@ class Metrics:
         with self._lock:
             self._stream_rejected += 1
 
+    def record_preprocessing(self, backend):
+        with self._lock:
+            self._preprocessing[backend] = self._preprocessing.get(backend, 0) + 1
+
     def snapshot(self):
         with self._lock:
             return {
@@ -44,4 +49,5 @@ class Metrics:
                 "streaming": {
                     "rejected": self._stream_rejected,
                 },
+                "preprocessing": dict(self._preprocessing),
             }

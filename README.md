@@ -40,9 +40,14 @@ the same tokenize, encode, and decode behavior as the reference
 implementation in `app/tokenizer.py`, so the two can be compared directly.
 
 Build it with maturin from the `rust/` directory (`maturin develop`), and
-run its unit tests with `cargo test`. The server does not call it yet;
-wiring it into preprocessing, with a fallback when it is missing, is a
-later step.
+run its unit tests with `cargo test`. The server calls it through
+`app/backend.py`: when the extension is built, preprocessing runs in
+Rust; when it is missing, the server starts anyway and uses the pure
+Python tokenizer instead. `POST /preprocess` turns texts into a padded
+batch and reports which backend served the request, and
+`GET /health/detail` and `GET /metrics` report the active backend too.
+A request can also supply its own `vocabulary` texts, which are learned
+on a fresh backend of the same kind for that request only.
 
 ## Preprocessing and benchmarking
 

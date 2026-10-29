@@ -7,20 +7,28 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.backend import load_backend
 from app.batching import Batcher
 from app.metrics import Metrics
 from app.queue import AsyncPredictQueue, QueueFullError
 from app.registry import ModelRegistry
-from app.schemas import JobResponse, PredictRequest, PredictResponse
+from app.schemas import (
+    JobResponse,
+    PredictRequest,
+    PredictResponse,
+    PreprocessRequest,
+    PreprocessResponse,
+)
 from app.streaming import ConcurrencyLimiter, stream_prediction
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
-def create_app(registry=None, max_concurrent_streams=10):
+def create_app(registry=None, max_concurrent_streams=10, text_backend=None):
     registry = registry or ModelRegistry()
     if not registry.list_models() and MODELS_DIR.exists():
         registry.load_directory(MODELS_DIR)
+    text_backend = text_backend or load_backend()
 
     metrics = Metrics()
     queue = AsyncPredictQueue(registry)
@@ -71,6 +79,7 @@ def create_app(registry=None, max_concurrent_streams=10):
         detail["status"] = "ok"
         detail["models"] = len(registry.list_models())
         detail["queue_depth"] = queue.depth
+        detail["preprocessing_backend"] = text_backend.name
         metrics.record_request("GET", "/health/detail", 200)
         return detail
 
@@ -80,6 +89,7 @@ def create_app(registry=None, max_concurrent_streams=10):
         snapshot["models"] = len(registry.list_models())
         snapshot["queue_depth"] = queue.depth
         snapshot["batching"] = batching_stats()
+        snapshot["preprocessing_backend"] = text_backend.name
         metrics.record_request("GET", "/metrics", 200)
         return snapshot
 
@@ -138,6 +148,25 @@ def create_app(registry=None, max_concurrent_streams=10):
         metrics.record_prediction(True)
         return PredictResponse(
             model=model.name, version=model.version, prediction=prediction
+        )
+
+    @app.post("/preprocess", response_model=PreprocessResponse)
+    def preprocess(request: PreprocessRequest):
+        # A vocabulary supplied with the request is learned on a fresh
+        # backend of the same kind, so one caller's vocabulary never
+        # leaks into the shared backend other requests use.
+        backend = text_backend
+        if request.vocabulary is not None:
+            backend = load_backend(prefer=text_backend.name)
+            backend.build_vocab(request.vocabulary)
+        batch = backend.prepare_batch(request.texts, max_length=request.max_length)
+        metrics.record_request("POST", "/preprocess", 200)
+        metrics.record_preprocessing(backend.name)
+        return PreprocessResponse(
+            ids=batch.ids,
+            attention_mask=batch.attention_mask,
+            lengths=batch.lengths,
+            backend=backend.name,
         )
 
     @app.post("/predict/async", response_model=JobResponse, status_code=202)

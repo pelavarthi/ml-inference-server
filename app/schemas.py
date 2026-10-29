@@ -28,6 +28,19 @@ class PredictResponse(BaseModel):
     prediction: float
 
 
+class PreprocessRequest(BaseModel):
+    texts: list[str] = Field(max_length=256)
+    vocabulary: list[str] | None = Field(default=None, max_length=4096)
+    max_length: int | None = Field(default=None, ge=1)
+
+
+class PreprocessResponse(BaseModel):
+    ids: list[list[int]]
+    attention_mask: list[list[int]]
+    lengths: list[int]
+    backend: str
+
+
 class JobResponse(BaseModel):
     job_id: str
     model: str

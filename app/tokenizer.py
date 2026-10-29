@@ -1,8 +1,9 @@
 """Word tokenizer with a small learned vocabulary.
 
 This is the reference implementation of the tokenizer that the Rust
-extension in rust/ mirrors. The server does not use it yet; Day 7 wires
-one of the two implementations into prediction preprocessing.
+extension in rust/ mirrors. The server uses one of the two
+implementations through app/backend.py, which falls back to this one
+when the Rust extension is missing.
 
 Tokenizing rules: words and numbers stay whole, punctuation becomes its
 own token, and runs of whitespace just separate tokens. Two ids are
