@@ -43,3 +43,16 @@ Build it with maturin from the `rust/` directory (`maturin develop`), and
 run its unit tests with `cargo test`. The server does not call it yet;
 wiring it into preprocessing, with a fallback when it is missing, is a
 later step.
+
+## Preprocessing and benchmarking
+
+`app/preprocessing.py` turns raw texts into a padded batch: token ids
+padded with 0 to the longest sequence in the batch, an attention mask
+(1 for real tokens, 0 for padding), and each sequence's true length. It
+accepts either tokenizer, and the Rust side has a matching
+`Tokenizer.prepare_batch` that does the whole batch in one call instead
+of one call per text.
+
+`benchmarks/preprocess_bench.py` times all three paths (Python, Rust
+per text, Rust per batch) over 500 texts and prints the speedup. The
+Rust rows are skipped when the extension is not built.
