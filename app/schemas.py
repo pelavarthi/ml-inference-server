@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field, field_validator
 class PredictRequest(BaseModel):
     model: str = Field(min_length=1)
     features: list[float] = Field(min_length=1, max_length=1024)
+    version: str | None = Field(default=None, min_length=1)
+    experiment: str | None = Field(default=None, min_length=1)
+    subject: str | None = Field(default=None, min_length=1)
 
     @field_validator("model")
     @classmethod
@@ -26,6 +29,7 @@ class PredictResponse(BaseModel):
     model: str
     version: str
     prediction: float
+    experiment: str | None = None
 
 
 class PreprocessRequest(BaseModel):

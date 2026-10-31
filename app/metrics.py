@@ -17,17 +17,23 @@ class Metrics:
         self._prediction_failures = 0
         self._stream_rejected = 0
         self._preprocessing = {}
+        self._predictions_by_version = {}
 
     def record_request(self, method, path, status):
         key = f"{method} {path} {status}"
         with self._lock:
             self._requests[key] = self._requests.get(key, 0) + 1
 
-    def record_prediction(self, ok):
+    def record_prediction(self, ok, model=None, version=None):
         with self._lock:
             self._predictions += 1
             if not ok:
                 self._prediction_failures += 1
+            if model is not None and version is not None:
+                key = f"{model}@{version}"
+                self._predictions_by_version[key] = (
+                    self._predictions_by_version.get(key, 0) + 1
+                )
 
     def record_stream_rejected(self):
         with self._lock:
@@ -45,6 +51,7 @@ class Metrics:
                 "predictions": {
                     "total": self._predictions,
                     "failed": self._prediction_failures,
+                    "by_version": dict(self._predictions_by_version),
                 },
                 "streaming": {
                     "rejected": self._stream_rejected,

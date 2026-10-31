@@ -20,15 +20,34 @@ from app.schemas import (
     PreprocessResponse,
 )
 from app.streaming import ConcurrencyLimiter, stream_prediction
+from app.versioning import Experiment, Router
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
-def create_app(registry=None, max_concurrent_streams=10, text_backend=None):
+def create_app(
+    registry=None, max_concurrent_streams=10, text_backend=None, experiments=None
+):
     registry = registry or ModelRegistry()
     if not registry.list_models() and MODELS_DIR.exists():
         registry.load_directory(MODELS_DIR)
     text_backend = text_backend or load_backend()
+    router = Router(registry, experiments)
+    if experiments is None:
+        # A model with more than one version gets an even A/B split
+        # between its versions, so a new version can be compared
+        # against the old one before it is promoted to default.
+        for info in registry.list_models():
+            name = info["name"]
+            versions = registry.versions(name)
+            if len(versions) > 1 and f"{name}-ab" not in router.experiments:
+                router.register_experiment(
+                    Experiment(
+                        f"{name}-ab",
+                        name,
+                        [(version, 1) for version in versions],
+                    )
+                )
 
     metrics = Metrics()
     queue = AsyncPredictQueue(registry)
@@ -98,6 +117,30 @@ def create_app(registry=None, max_concurrent_streams=10, text_backend=None):
         metrics.record_request("GET", "/models", 200)
         return {"models": registry.list_models()}
 
+    @app.get("/models/{name}/versions")
+    def get_model_versions(name: str):
+        try:
+            versions = registry.versions(name)
+        except KeyError:
+            metrics.record_request("GET", "/models/{name}/versions", 404)
+            raise HTTPException(status_code=404, detail="unknown model")
+        metrics.record_request("GET", "/models/{name}/versions", 200)
+        return {
+            "model": name,
+            "versions": versions,
+            "default": registry.default_version(name),
+        }
+
+    @app.get("/experiments")
+    def list_experiments():
+        metrics.record_request("GET", "/experiments", 200)
+        return {
+            "experiments": [
+                experiment.info()
+                for experiment in router.experiments.values()
+            ]
+        }
+
     @app.get("/models/{name}")
     def get_model(name: str):
         try:
@@ -111,21 +154,33 @@ def create_app(registry=None, max_concurrent_streams=10, text_backend=None):
     @app.post("/predict", response_model=PredictResponse)
     def predict(request: PredictRequest):
         try:
-            model = registry.get(request.model)
+            model, experiment = router.resolve(
+                request.model,
+                version=request.version,
+                experiment=request.experiment,
+                subject=request.subject,
+            )
         except KeyError:
             metrics.record_request("POST", "/predict", 404)
             metrics.record_prediction(False)
-            raise HTTPException(status_code=404, detail="unknown model")
-        try:
-            prediction = model.predict(request.features)
+            raise HTTPException(status_code=404, detail="unknown model, version, or experiment")
         except ValueError as exc:
             metrics.record_request("POST", "/predict", 400)
             metrics.record_prediction(False)
             raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            prediction = model.predict(request.features)
+        except ValueError as exc:
+            metrics.record_request("POST", "/predict", 400)
+            metrics.record_prediction(False, model.name, model.version)
+            raise HTTPException(status_code=400, detail=str(exc))
         metrics.record_request("POST", "/predict", 200)
-        metrics.record_prediction(True)
+        metrics.record_prediction(True, model.name, model.version)
         return PredictResponse(
-            model=model.name, version=model.version, prediction=prediction
+            model=model.name,
+            version=model.version,
+            prediction=prediction,
+            experiment=experiment,
         )
 
     @app.post("/predict/batched", response_model=PredictResponse)

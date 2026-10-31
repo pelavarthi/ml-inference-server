@@ -49,6 +49,24 @@ batch and reports which backend served the request, and
 A request can also supply its own `vocabulary` texts, which are learned
 on a fresh backend of the same kind for that request only.
 
+## Model versions and A/B tests
+
+The registry is keyed by name and version, so one model can have
+several versions at once and a new version never overwrites the old
+one. `GET /models/{name}/versions` lists them, and the default for a
+name is its lowest version unless another is promoted with
+`set_default`.
+
+`POST /predict` accepts an optional `version` to pin one, or an
+`experiment` plus a `subject` (a user id, a session id) to join an A/B
+test. The subject is hashed, so the same caller always gets the same
+variant with nothing stored. An explicit version wins over an
+experiment. A model with more than one version automatically gets an
+even A/B experiment named `{model}-ab`; `GET /experiments` lists
+them. The shipped `tiny-linear` has versions 0.1.0 and 0.2.0, so
+`tiny-linear-ab` splits between them. `GET /metrics` counts
+predictions per version, which is how you compare variants.
+
 ## Preprocessing and benchmarking
 
 `app/preprocessing.py` turns raw texts into a padded batch: token ids
