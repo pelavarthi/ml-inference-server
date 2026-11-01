@@ -30,6 +30,7 @@ class PredictResponse(BaseModel):
     version: str
     prediction: float
     experiment: str | None = None
+    cached: bool = False
 
 
 class PreprocessRequest(BaseModel):

@@ -67,6 +67,17 @@ them. The shipped `tiny-linear` has versions 0.1.0 and 0.2.0, so
 `tiny-linear-ab` splits between them. `GET /metrics` counts
 predictions per version, which is how you compare variants.
 
+## Prediction caching
+
+`POST /predict` caches results in memory: the key is the model name,
+version, and features, so asking the same question twice runs the
+model once and reuses the answer the second time (the response says
+`"cached": true`). Entries expire after 5 minutes and the cache holds
+at most 1024 entries, dropping the least recently used first, so a
+stale or unbounded cache cannot grow forever. `GET /cache/stats`
+reports hits, misses, evictions, and size, `DELETE /cache` clears it,
+and `GET /metrics` includes the same cache stats.
+
 ## Preprocessing and benchmarking
 
 `app/preprocessing.py` turns raw texts into a padded batch: token ids

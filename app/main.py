@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.backend import load_backend
 from app.batching import Batcher
+from app.cache import PredictionCache
 from app.metrics import Metrics
 from app.queue import AsyncPredictQueue, QueueFullError
 from app.registry import ModelRegistry
@@ -26,7 +27,11 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
 def create_app(
-    registry=None, max_concurrent_streams=10, text_backend=None, experiments=None
+    registry=None,
+    max_concurrent_streams=10,
+    text_backend=None,
+    experiments=None,
+    prediction_cache=None,
 ):
     registry = registry or ModelRegistry()
     if not registry.list_models() and MODELS_DIR.exists():
@@ -50,6 +55,7 @@ def create_app(
                 )
 
     metrics = Metrics()
+    prediction_cache = prediction_cache or PredictionCache()
     queue = AsyncPredictQueue(registry)
     batchers = {}
     stream_limiter = ConcurrencyLimiter(max_concurrent_streams)
@@ -108,6 +114,7 @@ def create_app(
         snapshot["models"] = len(registry.list_models())
         snapshot["queue_depth"] = queue.depth
         snapshot["batching"] = batching_stats()
+        snapshot["cache"] = prediction_cache.stats()
         snapshot["preprocessing_backend"] = text_backend.name
         metrics.record_request("GET", "/metrics", 200)
         return snapshot
@@ -141,6 +148,17 @@ def create_app(
             ]
         }
 
+    @app.get("/cache/stats")
+    def get_cache_stats():
+        metrics.record_request("GET", "/cache/stats", 200)
+        return prediction_cache.stats()
+
+    @app.delete("/cache")
+    def clear_cache():
+        cleared = prediction_cache.clear()
+        metrics.record_request("DELETE", "/cache", 200)
+        return {"cleared": cleared, "cache": prediction_cache.stats()}
+
     @app.get("/models/{name}")
     def get_model(name: str):
         try:
@@ -168,12 +186,28 @@ def create_app(
             metrics.record_request("POST", "/predict", 400)
             metrics.record_prediction(False)
             raise HTTPException(status_code=400, detail=str(exc))
+        cached = prediction_cache.get(
+            model.name, model.version, request.features
+        )
+        if cached is not None:
+            metrics.record_request("POST", "/predict", 200)
+            metrics.record_prediction(True, model.name, model.version)
+            return PredictResponse(
+                model=model.name,
+                version=model.version,
+                prediction=cached,
+                experiment=experiment,
+                cached=True,
+            )
         try:
             prediction = model.predict(request.features)
         except ValueError as exc:
             metrics.record_request("POST", "/predict", 400)
             metrics.record_prediction(False, model.name, model.version)
             raise HTTPException(status_code=400, detail=str(exc))
+        prediction_cache.put(
+            model.name, model.version, request.features, prediction
+        )
         metrics.record_request("POST", "/predict", 200)
         metrics.record_prediction(True, model.name, model.version)
         return PredictResponse(
