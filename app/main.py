@@ -11,6 +11,7 @@ from app.backend import load_backend
 from app.batching import Batcher
 from app.cache import PredictionCache
 from app.metrics import Metrics
+from app.quantization import QuantizedModel
 from app.queue import AsyncPredictQueue, QueueFullError
 from app.registry import ModelRegistry
 from app.schemas import (
@@ -159,6 +160,24 @@ def create_app(
         metrics.record_request("DELETE", "/cache", 200)
         return {"cleared": cleared, "cache": prediction_cache.stats()}
 
+    @app.get("/models/{name}/quantization")
+    def get_model_quantization(
+        name: str,
+        bits: int = Query(default=8),
+        version: str | None = Query(default=None),
+    ):
+        try:
+            model = registry.get(name, version)
+            quantized = QuantizedModel(model, bits)
+        except KeyError:
+            metrics.record_request("GET", "/models/{name}/quantization", 404)
+            raise HTTPException(status_code=404, detail="unknown model")
+        except ValueError as exc:
+            metrics.record_request("GET", "/models/{name}/quantization", 400)
+            raise HTTPException(status_code=400, detail=str(exc))
+        metrics.record_request("GET", "/models/{name}/quantization", 200)
+        return quantized.summary()
+
     @app.get("/models/{name}")
     def get_model(name: str):
         try:
@@ -187,7 +206,10 @@ def create_app(
             metrics.record_prediction(False)
             raise HTTPException(status_code=400, detail=str(exc))
         cached = prediction_cache.get(
-            model.name, model.version, request.features
+            model.name,
+            model.version,
+            request.features,
+            quantization=request.quantization,
         )
         if cached is not None:
             metrics.record_request("POST", "/predict", 200)
@@ -198,15 +220,24 @@ def create_app(
                 prediction=cached,
                 experiment=experiment,
                 cached=True,
+                quantized=request.quantization is not None,
+                quantization_bits=request.quantization,
             )
+        predict_model = model
+        if request.quantization is not None:
+            predict_model = QuantizedModel(model, request.quantization)
         try:
-            prediction = model.predict(request.features)
+            prediction = predict_model.predict(request.features)
         except ValueError as exc:
             metrics.record_request("POST", "/predict", 400)
             metrics.record_prediction(False, model.name, model.version)
             raise HTTPException(status_code=400, detail=str(exc))
         prediction_cache.put(
-            model.name, model.version, request.features, prediction
+            model.name,
+            model.version,
+            request.features,
+            prediction,
+            quantization=request.quantization,
         )
         metrics.record_request("POST", "/predict", 200)
         metrics.record_prediction(True, model.name, model.version)
@@ -215,6 +246,8 @@ def create_app(
             version=model.version,
             prediction=prediction,
             experiment=experiment,
+            quantized=request.quantization is not None,
+            quantization_bits=request.quantization,
         )
 
     @app.post("/predict/batched", response_model=PredictResponse)

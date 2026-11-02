@@ -29,8 +29,10 @@ class PredictionCache:
     def _expired(self, stored_at):
         return time.monotonic() - stored_at > self.ttl_seconds
 
-    def get(self, model, version, features):
-        key = (model, version, tuple(features))
+    def get(self, model, version, features, quantization=None):
+        # A quantized prediction is a different answer from the
+        # full-precision one, so the bit width is part of the key.
+        key = (model, version, tuple(features), quantization)
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
@@ -45,8 +47,8 @@ class PredictionCache:
             self._hits += 1
             return prediction
 
-    def put(self, model, version, features, prediction):
-        key = (model, version, tuple(features))
+    def put(self, model, version, features, prediction, quantization=None):
+        key = (model, version, tuple(features), quantization)
         with self._lock:
             if key in self._entries:
                 del self._entries[key]

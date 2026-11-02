@@ -9,6 +9,14 @@ class PredictRequest(BaseModel):
     version: str | None = Field(default=None, min_length=1)
     experiment: str | None = Field(default=None, min_length=1)
     subject: str | None = Field(default=None, min_length=1)
+    quantization: int | None = Field(default=None)
+
+    @field_validator("quantization")
+    @classmethod
+    def quantization_must_be_supported(cls, value):
+        if value is not None and value not in (4, 8, 16):
+            raise ValueError("quantization must be 4, 8, or 16 bits")
+        return value
 
     @field_validator("model")
     @classmethod
@@ -31,6 +39,8 @@ class PredictResponse(BaseModel):
     prediction: float
     experiment: str | None = None
     cached: bool = False
+    quantized: bool = False
+    quantization_bits: int | None = None
 
 
 class PreprocessRequest(BaseModel):

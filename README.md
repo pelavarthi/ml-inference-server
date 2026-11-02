@@ -78,6 +78,18 @@ stale or unbounded cache cannot grow forever. `GET /cache/stats`
 reports hits, misses, evictions, and size, `DELETE /cache` clears it,
 and `GET /metrics` includes the same cache stats.
 
+## Quantization
+
+`POST /predict` accepts an optional `quantization` of 4, 8, or 16
+bits. The model's weights are rounded to that many bits per weight
+before predicting, so an 8-bit model stores each weight in 1 byte
+instead of 8, at the cost of a small rounding error (at most half a
+grid step per weight). The response says `"quantized": true` and
+reports the bit width, and quantized answers are cached separately
+from full-precision ones, so the two never get mixed up.
+`GET /models/{name}/quantization?bits=8` shows the codes, the scale,
+the size saved, and the largest weight error for a model.
+
 ## Preprocessing and benchmarking
 
 `app/preprocessing.py` turns raw texts into a padded batch: token ids
