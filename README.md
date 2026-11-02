@@ -90,6 +90,22 @@ from full-precision ones, so the two never get mixed up.
 `GET /models/{name}/quantization?bits=8` shows the codes, the scale,
 the size saved, and the largest weight error for a model.
 
+## Latency percentiles and observability
+
+Averages hide the slow requests, so every request is timed by
+middleware in `app/latency.py` and grouped by route template (both
+`/models/tiny-linear` and `/models/other` count as
+`GET /models/{name}`). `GET /metrics/latency` reports, per route and
+overall, the count, mean, min, max, p50, p90, p95, and p99 in
+milliseconds, plus how many requests took over 1000 ms. The same
+summary is included in `GET /metrics`. Add `?route=POST /predict` to
+`GET /metrics/latency` for one route only. Only the newest 1000
+samples per route are kept, so tracking cannot grow without bound.
+The middleware is plain ASGI, so streaming responses still stream
+instead of being buffered. Note the latency of the request asking
+for the numbers is not in its own answer yet: it is recorded only
+once that response has been sent.
+
 ## Preprocessing and benchmarking
 
 `app/preprocessing.py` turns raw texts into a padded batch: token ids

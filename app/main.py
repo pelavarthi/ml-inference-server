@@ -1,6 +1,7 @@
 """FastAPI entry point: health, model list, predict, metrics, async queue."""
 
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.backend import load_backend
 from app.batching import Batcher
 from app.cache import PredictionCache
+from app.latency import LatencyTracker
 from app.metrics import Metrics
 from app.quantization import QuantizedModel
 from app.queue import AsyncPredictQueue, QueueFullError
@@ -25,6 +27,38 @@ from app.streaming import ConcurrencyLimiter, stream_prediction
 from app.versioning import Experiment, Router
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+class LatencyMiddleware:
+    """Time each request and record it, without touching the response.
+
+    This is plain ASGI middleware rather than Starlette's HTTP
+    middleware, so streaming responses pass through untouched instead
+    of being buffered. The router fills in scope["route"] while the
+    request runs downstream, so by the time it returns the route
+    template (for example /models/{name}) is available to group by.
+    """
+
+    def __init__(self, app, tracker):
+        self.app = app
+        self.tracker = tracker
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+
+        async def send_wrapper(message):
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            route = scope.get("route")
+            path = getattr(route, "path", None) or scope.get("path", "")
+            duration_ms = (time.perf_counter() - started) * 1000
+            self.tracker.record(f"{scope['method']} {path}", duration_ms)
 
 
 def create_app(
@@ -56,6 +90,7 @@ def create_app(
                 )
 
     metrics = Metrics()
+    latency = LatencyTracker()
     prediction_cache = prediction_cache or PredictionCache()
     queue = AsyncPredictQueue(registry)
     batchers = {}
@@ -84,6 +119,7 @@ def create_app(
             await batcher.stop()
 
     app = FastAPI(title="ml-inference-server", lifespan=lifespan)
+    app.add_middleware(LatencyMiddleware, tracker=latency)
 
     def job_response(job):
         return JobResponse(
@@ -116,9 +152,24 @@ def create_app(
         snapshot["queue_depth"] = queue.depth
         snapshot["batching"] = batching_stats()
         snapshot["cache"] = prediction_cache.stats()
+        snapshot["latency"] = latency.summary()
         snapshot["preprocessing_backend"] = text_backend.name
         metrics.record_request("GET", "/metrics", 200)
         return snapshot
+
+    @app.get("/metrics/latency")
+    def get_latency(route: str | None = Query(default=None)):
+        # The latency of this very request is not in the answer yet:
+        # the middleware records it only once the response is sent.
+        if route is not None:
+            summary = latency.route_summary(route)
+            if summary is None:
+                metrics.record_request("GET", "/metrics/latency", 404)
+                raise HTTPException(status_code=404, detail="unknown route")
+            metrics.record_request("GET", "/metrics/latency", 200)
+            return {"route": route, "latency": summary}
+        metrics.record_request("GET", "/metrics/latency", 200)
+        return latency.summary()
 
     @app.get("/models")
     def list_models():
