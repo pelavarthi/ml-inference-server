@@ -106,6 +106,39 @@ instead of being buffered. Note the latency of the request asking
 for the numbers is not in its own answer yet: it is recorded only
 once that response has been sent.
 
+## Docker and deployment
+
+The server ships as a container so it runs the same on any machine
+with Docker, with no local Python setup to match. The image is built
+from `python:3.12-slim`, installs `requirements.txt`, and copies in
+`app/` and `models/` only. A healthcheck polls `GET /health` every
+10 seconds, so a container that stopped answering gets flagged
+instead of sitting there looking healthy.
+
+```
+docker compose up --build
+```
+
+That starts the API on http://localhost:8000, where `GET /health`
+should answer `{"status": "ok"}`. Or build and run it directly:
+
+```
+docker build -t ml-inference-server .
+docker run -p 8000:8000 ml-inference-server
+```
+
+Compose mounts `./models` read-only into the container, so a model
+file can be swapped without rebuilding the image; without compose,
+the copy baked into the image is used instead. The container
+restarts on its own unless stopped. `.dockerignore` keeps `.git`,
+Python caches, and `rust/target/` out of the build context, so
+builds stay small.
+
+The image does not include the Rust extension, so preprocessing in
+the container runs on the Python backend. That is the normal
+fallback from the integration work: the server still starts and
+serves, just without the Rust speedup.
+
 ## Preprocessing and benchmarking
 
 `app/preprocessing.py` turns raw texts into a padded batch: token ids
