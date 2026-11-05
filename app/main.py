@@ -15,6 +15,7 @@ from app.latency import LatencyTracker
 from app.metrics import Metrics
 from app.quantization import QuantizedModel
 from app.queue import AsyncPredictQueue, QueueFullError
+from app.rate_limit import RateLimiter
 from app.registry import ModelRegistry
 from app.schemas import (
     JobResponse,
@@ -27,6 +28,66 @@ from app.streaming import ConcurrencyLimiter, stream_prediction
 from app.versioning import Experiment, Router
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+# Only the expensive POST endpoints are limited. Health, metrics,
+# and model listings stay open so monitoring never locks itself out.
+LIMITED_PATHS = {
+    "/predict",
+    "/predict/batched",
+    "/predict/async",
+    "/predict/stream",
+    "/preprocess",
+}
+
+
+class RateLimitMiddleware:
+    """Reject over-budget clients with 429 before the app runs.
+
+    Plain ASGI like the latency middleware, so it costs nothing on
+    unlimited routes and never buffers a streaming response. The
+    client key is the X-Client-Id header when one is sent, otherwise
+    the client IP, so one greedy client cannot spend another's budget.
+    """
+
+    def __init__(self, app, limiter):
+        self.app = app
+        self.limiter = limiter
+
+    def _client_key(self, scope):
+        for name, value in scope.get("headers", []):
+            if name == b"x-client-id" and value:
+                return value.decode("utf-8", "replace")
+        client = scope.get("client")
+        return client[0] if client else "unknown"
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or scope["path"] not in LIMITED_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+        allowed, retry_after = self.limiter.allow(self._client_key(scope))
+        if allowed:
+            await self.app(scope, receive, send)
+            return
+        seconds = self.limiter.retry_after_seconds(retry_after)
+        body = json.dumps(
+            {"detail": f"rate limit exceeded, try again in {seconds} seconds"}
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"retry-after", str(seconds).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 class LatencyMiddleware:
@@ -67,6 +128,8 @@ def create_app(
     text_backend=None,
     experiments=None,
     prediction_cache=None,
+    rate_limit_per_minute=60,
+    rate_limit_burst=10,
 ):
     registry = registry or ModelRegistry()
     if not registry.list_models() and MODELS_DIR.exists():
@@ -91,6 +154,7 @@ def create_app(
 
     metrics = Metrics()
     latency = LatencyTracker()
+    limiter = RateLimiter(rate_limit_per_minute, rate_limit_burst)
     prediction_cache = prediction_cache or PredictionCache()
     queue = AsyncPredictQueue(registry)
     batchers = {}
@@ -119,6 +183,9 @@ def create_app(
             await batcher.stop()
 
     app = FastAPI(title="ml-inference-server", lifespan=lifespan)
+    # Added first so the latency middleware wraps it and still times
+    # the 429s it returns: the last middleware added runs outermost.
+    app.add_middleware(RateLimitMiddleware, limiter=limiter)
     app.add_middleware(LatencyMiddleware, tracker=latency)
 
     def job_response(job):
@@ -153,6 +220,7 @@ def create_app(
         snapshot["batching"] = batching_stats()
         snapshot["cache"] = prediction_cache.stats()
         snapshot["latency"] = latency.summary()
+        snapshot["rate_limit"] = limiter.stats()
         snapshot["preprocessing_backend"] = text_backend.name
         metrics.record_request("GET", "/metrics", 200)
         return snapshot

@@ -106,6 +106,37 @@ instead of being buffered. Note the latency of the request asking
 for the numbers is not in its own answer yet: it is recorded only
 once that response has been sent.
 
+## Rate limiting and load testing
+
+Each client gets 60 prediction requests a minute plus a burst of 10
+it can spend at once, enforced by a token bucket in
+`app/rate_limit.py`. The bucket refills continuously, so a client
+that pauses briefly gets its budget back instead of waiting for a
+whole window to roll over. Clients are told apart by the
+`X-Client-Id` header when one is sent, otherwise by IP, so one
+greedy client cannot spend another's budget. The limit applies to
+the expensive POST endpoints (`/predict`, `/predict/batched`,
+`/predict/async`, `/predict/stream`, `/preprocess`); health,
+metrics, and model listings are never limited, so monitoring cannot
+lock itself out. Over the limit, the server answers 429 with a
+`Retry-After` header saying how many seconds to wait, and
+`GET /metrics` reports the count under `rate_limit`. Pass
+`rate_limit_per_minute` and `rate_limit_burst` to `create_app` to
+change the defaults.
+
+`benchmarks/load_test.py` hammers `POST /predict` with a bounded
+number of concurrent clients and prints how many requests
+succeeded, how many were rate limited, how many failed, the
+throughput, and the mean/p50/p95/p99 latency:
+
+```
+python benchmarks/load_test.py --requests 120 --concurrency 10
+```
+
+Against the defaults, 120 requests in one burst come back as 10 ok
+and 110 rate limited, at roughly 385 requests a second with p50
+around 22 ms. That split is the limiter working, not a failure.
+
 ## Docker and deployment
 
 The server ships as a container so it runs the same on any machine
