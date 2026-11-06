@@ -182,3 +182,30 @@ of one call per text.
 `benchmarks/preprocess_bench.py` times all three paths (Python, Rust
 per text, Rust per batch) over 500 texts and prints the speedup. The
 Rust rows are skipped when the extension is not built.
+
+## Demo client and benchmark report
+
+`client/demo_client.py` exercises every endpoint once against a
+running server — health, models, a normal prediction, an 8-bit
+quantized prediction, a batched prediction, an async job it polls to
+completion, a streaming prediction, preprocessing, and the latency
+summary — and prints one line per step:
+
+```
+python client/demo_client.py
+```
+
+A step that fails is reported as FAIL instead of stopping the demo,
+so one command shows which endpoint broke. It exits non-zero when
+any step fails. Pass `--url` to point it at another server.
+
+`benchmarks/final_report.py` measures the server in-process and
+writes `docs/BENCHMARK_REPORT.md` with the real numbers:
+throughput and p50/p95/p99 latency for `POST /predict`, what a burst
+looks like under the default rate limit, and Python preprocessing
+speed. On this machine it measured about 820 requests a second with
+p95 around 14 ms, and a 120-request burst against the defaults came
+back as 10 ok and 110 rate limited. The report says plainly what it
+does not cover: the load test runs in-process, not over a real
+network, and tiny-linear is a toy model. Rerun the script to refresh
+the numbers after a change instead of editing them by hand.
